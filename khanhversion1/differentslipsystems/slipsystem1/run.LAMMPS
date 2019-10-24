@@ -1,0 +1,21 @@
+#!/bin/bash
+#SBATCH --job-name=RoycePracticeGB
+#SBATCH --mail-user=roycecreyes@ufl.edu
+#SBATCH --mail-type=NONE
+#SBATCH --output %j.out
+#SBATCH --nodes=8               #Number of nodes
+#SBATCH --ntasks=128            #Number of MPI processes
+#SBATCH --ntasks-per-node=16    #Number of cores for MPI processes per node
+#SBATCH --ntasks-per-socket=8   #Number of cores for MPI processes per socket
+#SBATCH --mem-per-cpu=500mb     #Per processor memory request
+#SBATCH --time=23:00:00
+
+date
+hostname
+
+module load intel/2019
+module load openmpi/4.0.1
+
+
+LAMMPS=/home/roycecreyes/lammps-22Aug18/src/lmp_ufhpc
+srun --mpi=pmix_v2 $LAMMPS < in.GB_dislocation_loop_100K

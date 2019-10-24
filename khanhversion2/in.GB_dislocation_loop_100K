@@ -1,0 +1,467 @@
+#create log file
+
+log             log.GB_dislocation_loop_100K
+
+# 3d metal tensile test simulation
+
+units           metal
+boundary        p p p
+
+atom_style      atomic
+neighbor        0.3 bin                
+neigh_modify    delay 5    
+
+#variables to build parameters
+
+variable	d equal 4.05
+
+variable   	dx equal sqrt(5)
+variable	dy equal sqrt(5)
+variable	dz equal 1
+
+variable	nx equal 32
+variable	ny equal 16
+variable	nz equal 35
+
+
+variable		x1 equal (-v_nx-0.0001)*v_d*v_dx
+variable        y1 equal (-v_ny-0.0001)*v_d*v_dy
+variable        z1 equal (-v_nz-0.0001)*v_d*v_dz
+
+variable		x2 equal (v_nx-0.0001)*v_d*v_dx
+variable        y2 equal (v_ny-0.0001)*v_d*v_dy
+variable        z2 equal (v_nz-0.0001)*v_d*v_dz
+
+
+variable        x3 equal -v_nx-0.0001    
+variable		x4 equal -v_nx/2-0.0001
+variable		x5 equal v_nx/2-0.0001
+variable        y3 equal -v_ny-0.0001    
+variable        z3 equal -v_nz-0.0001    
+
+variable		x6 equal v_nx-0.0001
+variable		y6 equal v_ny-0.0001
+variable		z6 equal v_nz-0.0001
+
+variable        new0x equal -0.0001*v_d*v_dx
+variable        new0y equal -0.0001*v_d*v_dy
+variable        new0z equal -0.0001*v_d*v_dz
+
+
+variable	burger equal ${d}/sqrt(2)
+variable	Poisson equal 0.616/(0.616+1.14)
+
+#radius in Angstrom, tau in barr, miu in bar
+
+variable        miu equal 316000
+variable        radius equal 40.5
+variable        tau equal 9579.17324238406
+variable        left equal v_tau*0.8
+variable        right equal v_tau*1.2
+variable	emin equal 1e-5
+variable	epress equal 1e-4
+variable	NODAmax equal 1.2*(17.309*v_radius-67.3)
+variable	NODAmin equal 0.8*(17.309*v_radius-67.3)
+variable	type equal 5
+variable    	iteration equal 5000
+variable	temperature equal 100
+variable	dislocationboxsize equal 130
+
+#create geometry
+
+lattice         fcc ${d}
+region          box prism ${x1} ${x2} ${y1} ${y2} ${z1} ${z2} 0 0 0 units box
+create_box      1 box
+
+#1st iteration is at 0K, 2nd iteration is at temperature
+variable        a loop 1 2
+label           loop1
+
+
+#compute stress strain relative to Bacon Scattergood solution
+
+variable        scalex equal -0.163299316
+variable        scaley equal 0.979795897
+variable        scalez equal -0.816496581
+variable        scaleyz equal -0.182574186
+variable        scalexz equal 0.365148372
+variable        scalexy equal 0.081649658
+
+
+
+variable        stressx equal v_stress*v_scalex  
+variable        stressy equal v_stress*v_scaley  
+variable        stressz equal v_stress*v_scalez  
+variable		stressyz equal v_stress*v_scaleyz
+variable        stressxz equal v_stress*v_scalexz
+variable        stressxy equal v_stress*v_scalexy
+
+
+#
+change_box     all x final ${x1} ${x2} y final ${y1} ${y2} z final ${z1} ${z2} xy final 0 xz final 0 yz final 0 units box
+variable        stress equal (v_left+v_right)/2
+
+#shift to create GB structures
+#lowesty=3.6224172,lowestcutoff=1.5,lowest=1976.17006244972/4=494.04
+
+variable        posy equal 3.6224172
+variable        cutoff equal 1.5
+
+#create atoms
+
+lattice         fcc $d orient x 1 2 0 orient y -2 1 0 orient z 0 0 1 spacing ${dx} ${dy} ${dz}
+region          upper block ${x3} ${x4} ${y3} ${y6} ${z3} ${z6}
+create_atoms    1 region upper
+
+lattice         fcc $d orient x 1 -2 0 orient y 2 1 0 orient z 0 0 1 spacing ${dx} ${dy} ${dz}
+region          middle block ${x4} ${x5} ${y3} ${y6} ${z3} ${z6}
+create_atoms    1 region middle
+
+lattice         fcc $d orient x 1 2 0 orient y -2 1 0 orient z 0 0 1 spacing ${dx} ${dy} ${dz}
+region          lower block ${x5} ${x6} ${y3} ${y6} ${z3} ${z6}
+create_atoms    1 region lower
+
+group          	upper region upper
+group           lower region lower
+group			middle region middle
+
+
+#eam potentials
+pair_style      eam/alloy
+pair_coeff      * * Al99.eam.alloy Al
+
+#define output frequency and styles
+thermo          100
+thermo_style    custom step temp epair etotal pxx pyy pzz pyz pxz pxy lx ly lz yz xz xy
+#thermo_modify	format float %30.20g
+
+#displace atoms
+
+displace_atoms upper move 0 ${posy} 0 units box
+displace_atoms lower move 0 ${posy} 0 units box 
+
+#delete atoms
+
+delete_atoms    overlap ${cutoff} upper middle
+delete_atoms	overlap ${cutoff} lower middle
+
+#store displacement of (0,0,0) atom to maintain the perfect symmetry of the loop
+region          origin block -0.1 0.1 -0.1 0.1 -0.1 0.1 units box
+group		origin region origin
+compute		4 origin displace/atom
+compute         5 origin reduce sum c_4[1]
+compute         6 origin reduce sum c_4[2]
+compute         7 origin reduce sum c_4[3]
+
+#3 minimization for GB structures
+# ---------- Run Minimization --------------------- 
+reset_timestep 0 
+thermo 100 
+thermo_style custom step pe lx ly lz press pxx pyy pzz
+min_style cg 
+minimize 1.0e-10 1.0e-8 1000 100000
+
+# ---------- Run Minimization 2--------------------- 
+# Now allow the box to expand/contract perpendicular to the grain boundary
+reset_timestep 0 
+thermo 100
+thermo_style custom step pe lx ly lz press pxx pyy pzz 
+fix 1 all box/relax x 0 vmax 0.001
+min_style cg 
+minimize 1.0e-10 1.0e-8 1000 100000
+
+# ---------- Run Minimization3 ---------------------
+reset_timestep 0
+thermo 100
+thermo_style custom step pe lx ly lz press pxx pyy pzz
+min_style cg 
+minimize 1.0e-12 1.0e-8 1000 100000
+
+unfix		1
+
+#skip the minimization part for 2nd iteration at 10K
+if		($a==2) then &
+"jump		in.GB_dislocation_loop_100K loop2"
+
+
+fix             1 all box/relax x ${stressx} y ${stressy} z ${stressz} yz ${stressyz} xz ${stressxz} xy ${stressxy} 
+min_style       cg
+minimize        1e-8 1.0e-4 2500 10000
+
+
+unfix           1
+reset_timestep  0
+fix             1 all box/relax x ${stressx} y ${stressy} z ${stressz} yz ${stressyz} xz ${stressxz} xy ${stressxy}
+min_style       cg
+minimize        1e-8 1.0e-4 2500 10000
+
+unfix           1
+reset_timestep  0
+fix             1 all box/relax x ${stressx} y ${stressy} z ${stressz} yz ${stressyz} xz ${stressxz} xy ${stressxy}
+min_style       cg
+minimize        1e-8 1.0e-4 2500 10000
+
+unfix           1
+reset_timestep  0
+fix             1 all box/relax x ${stressx} y ${stressy} z ${stressz} yz ${stressyz} xz ${stressxz} xy ${stressxy}
+min_style       cg
+minimize        1e-8 1.0e-4 2500 10000  
+
+unfix			1
+
+#define compute
+
+
+compute         1 all pe/atom
+compute         2 all reduce sum c_1
+compute		3 all displace/atom
+compute         csym all centro/atom fcc
+
+
+	
+
+dump            1 all custom 1 dump.check1 id type x y z c_4[1] c_4[2] c_4[3]
+thermo          100               
+thermo_style    custom step temp epair etotal pxx pyy pzz pyz pxz pxy lx ly lz yz xz xy c_5 c_6 c_7
+run		1
+undump          1
+
+
+variable        displacex equal -c_5
+variable        displacey equal -c_6
+variable        displacez equal -c_7
+
+
+displace_atoms  all move ${displacex} ${displacey} ${displacez} units box
+
+# shift to be on the correct plane
+displace_atoms  all move 0.905608 -2.7168 -2.025 units box
+
+
+#displace atoms to create dislocation
+displace_atoms  all loop 1 -2 0 2 1 0 0 0 1 ${new0x} ${new0y} ${new0z} ${burger} -1 0 1 1 1 1 ${radius} ${Poisson} units box
+
+
+
+#minimization
+
+reset_timestep 	0
+min_style       cg
+minimize        2.5e-12 1.0e-6 ${iteration} 30000
+
+
+# bring to correct pressure
+
+reset_timestep  0
+fix             1 all box/relax x ${stressx} y ${stressy} z ${stressz} yz ${stressyz} xz ${stressxz} xy ${stressxy}
+min_style       cg                          
+minimize        1e-8 1.0e-1 2500 10000         
+
+unfix           1
+reset_timestep  0
+fix             1 all box/relax x ${stressx} y ${stressy} z ${stressz} yz ${stressyz} xz ${stressxz} xy ${stressxy}
+min_style       cg
+minimize        1e-8 1.0e-1 2500 10000         
+
+unfix           1
+
+reset_timestep  0
+fix             1 all box/relax x ${stressx} y ${stressy} z ${stressz} yz ${stressyz} xz ${stressxz} xy ${stressxy}
+min_style       cg
+minimize        1e-8 1.0e-1 2500 10000         
+
+unfix           1
+
+#dump to compute NODA        
+dump        1 all custom ${iteration} dump.move.${stress} id type x y z c_csym
+dump            2 all custom ${iteration} dump.disp id c_3[1] c_3[2] c_3[3]
+
+reset_timestep  0
+fix             1 all box/relax x ${stressx} y ${stressy} z ${stressz} yz ${stressyz} xz ${stressxz} xy ${stressxy}
+min_style       cg
+minimize        1e-8 1.0e-1 2500 10000
+
+variable        dislocation atom c_csym
+group           dislocation compare dislocation 2
+region          dislocationbox block -${dislocationboxsize} ${dislocationboxsize} -${dislocationboxsize} ${dislocationboxsize} -${dislocationboxsize} ${dislocationboxsize} units box
+group			dislocationbox region dislocationbox
+group			dislocationcount intersect dislocation dislocationbox
+variable        NODA equal count(dislocationcount)
+
+undump		1
+undump		2
+unfix		1
+
+delete_atoms    group all
+
+uncompute       4
+uncompute       5 
+uncompute       6
+uncompute       7
+region		origin delete
+group		origin delete
+region          upper delete
+region          lower delete
+region          middle delete
+region		dislocationbox delete
+group		dislocationbox delete
+group		dislocationcount delete
+
+next		a
+jump 		in.GB_dislocation_loop_100K loop1
+
+
+
+label		loop2
+
+#define compute
+
+uncompute	4
+uncompute	5
+uncompute	6
+uncompute	7
+
+uncompute		csym
+compute         csym all centro/atom fcc
+
+variable        b loop 0 25
+variable        stress equal (v_left+v_right)/2
+
+
+
+#bring to equilibrium at desired T and P ( 2 or 3 fixes are required). For some reason 2 fixes seem to work well enough
+reset_timestep	0
+velocity        all create ${temperature} 5812775 dist gaussian
+fix             1 all npt temp ${temperature} ${temperature} 0.1 x ${stressx} ${stressx} 1 y ${stressy} ${stressy} 1 z ${stressz} ${stressz} 1 yz ${stressyz} ${stressyz} 1 xz ${stressxz} ${stressxz} 1 xy ${stressxy} ${stressxy} 1
+run				15000
+
+unfix			1
+fix             1 all npt temp ${temperature} ${temperature} 0.1 x ${stressx} ${stressx} 1 y ${stressy} ${stressy} 1 z ${stressz} ${stressz} 1 yz ${stressyz} ${stressyz} 1 xz ${stressxz} ${stressxz} 1 xy ${stressxy} ${stressxy} 1
+run				15000
+
+
+
+thermo          1000
+thermo_style    custom step temp epair etotal pxx pyy pzz pyz pxz pxy lx ly lz
+
+
+#bring to temperature and pressure
+
+
+displace_atoms	all move1
+
+#run 1 timestep to store the initial NODA
+dump        1 all custom 1 dump.NODAmax id type x y z c_csym
+run	    1
+
+variable	NODAmax delete
+variable	NODAmin delete
+variable        dislocation atom c_csym
+group           dislocation compare dislocation 5
+
+region          dislocationbox block -${dislocationboxsize} ${dislocationboxsize} -${dislocationboxsize} ${dislocationboxsize} -${dislocationboxsize} ${dislocationboxsize} units box
+group			dislocationbox region dislocationbox
+group			dislocationcount intersect dislocation dislocationbox
+variable        NODA equal count(dislocationcount)
+
+variable	initNODA equal ${NODA}
+variable	NODAmax equal v_initNODA*1.5
+variable	NODAmin equal v_initNODA*0.5
+
+variable	dislocation delete
+group		dislocation delete
+region		dislocationbox delete
+group		dislocationbox delete
+group		dislocationcount delete
+variable	NODA delete
+undump		1
+
+reset_timestep	0
+
+
+dump        1 all custom 2500 dump.move.$b.${stress} id type x y z c_csym
+
+#3rd loop to check every 2500 timestep
+label			loop3
+variable		c loop 1 8
+reset_timestep		0
+run			2500
+
+variable        dislocation atom c_csym
+group           dislocation compare dislocation 5
+
+region          dislocationbox block -${dislocationboxsize} ${dislocationboxsize} -${dislocationboxsize} ${dislocationboxsize} -${dislocationboxsize} ${dislocationboxsize} units box
+group                   dislocationbox region dislocationbox
+group                   dislocationcount intersect dislocation dislocationbox
+variable        NODA equal count(dislocationcount)
+variable        timestep equal step
+
+fix         	6 all print 1 "c = ${c},timestep= ${timestep}, stress = ${stress}, NODA=${NODA}" append pe_stress
+run		1
+unfix		6
+
+#check the NODA
+if              "(${NODA}>${NODAmax})" then &
+"variable       temp equal ${stress}" &
+"variable       right delete" &
+"variable       right equal ${temp}" &         
+"variable       temp delete" &
+"jump		in.GB_dislocation_loop_100K skip"
+
+if              "(${NODA}<${NODAmin})" then &
+"variable       temp equal ${stress}" &
+"variable       left delete" &
+"variable       left equal ${temp}" &         
+"variable       temp delete" &
+"jump		in.GB_dislocation_loop_100K skip"
+
+if              "(${c} == 8) && (${NODA}>0)"  then &
+"variable       temp equal ${stress}" &
+"variable       right delete" &
+"variable       right equal ${temp}" &
+"variable       temp delete" &
+"jump           in.GB_dislocation_loop_100K skip"
+
+
+variable	timestep delete
+variable	dislocation delete
+group		dislocation delete
+region		dislocationbox delete
+group		dislocationbox delete
+group		dislocationcount delete
+variable	NODA delete
+
+
+
+next		c
+jump		in.GB_dislocation_loop_100K loop3
+
+label		skip
+
+unfix		1
+undump		1
+
+variable	stress delete
+variable	c delete
+variable	timestep delete
+
+
+
+#uncompute	csym
+delete_atoms	group all
+region		origin delete
+group		origin delete
+region          upper delete
+region          lower delete
+region          middle delete
+region		dislocationbox delete
+group		dislocationbox delete
+group		dislocationcount delete
+
+
+reset_timestep	0
+next		b
+jump		in.GB_dislocation_loop_100K loop1
+
+label		exit
+
